@@ -1,0 +1,21 @@
+# build output
+# built loader is shipped in-repo (see package.sh)
+port/*.o
+port/build/
+*.log
+
+# game data never belongs here
+game/
+**/game/
+*.apk
+!docs/*.apk.md
+*.so
+!port/vendor/**/*.so
+
+# local junk
+.DS_Store
+__pycache__/
+*.ppm
+
+# release artifacts
+dist/
