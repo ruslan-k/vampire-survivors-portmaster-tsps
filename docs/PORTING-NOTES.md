@@ -188,3 +188,39 @@ captured frames show no compression artifacts.
 The port's `tex=` counter is *format-blind* (pixels x 4 bytes), and neither
 `/sys/kernel/debug/mali0/gpu_memory` nor `dma_buf/bufinfo` reflects texture
 residency on this firmware, so the GPU-side saving is proven at file level only.
+
+## 12. DLC preload and CPU texture experiments (negative results)
+
+Target was to stop the 8-DLC selection from keeping every DLC resident. Two
+attempts, both measured on device, both rejected.
+
+**Hooking `DlcLoader.LoadSprites` (`SF_DLC_HOOK=1`).** The shim resolves the class
+through IL2CPP metadata, reads `MethodInfo->methodPointer` (offset 0) and
+overwrites the prologue with `ldr x16, #8; br x16; .quad stub` - an absolute
+branch, so the +-128 MB `b` range never matters. Patch applied and logged:
+
+```
+[sf/dlc] LoadSprites method=0x7f337da430 code=0x7f8127f9f8
+[sf/dlc] LoadSprites patched -> 0x555c17e928
+```
+
+Memory looked like a 4x win - `RssAnon` 539 MB, `VmSwap` **87 MB** against
+341-446 MB in the unpatched run, still 29.9 fps, no exceptions. It was a trap: a
+live framebuffer capture showed the screen frozen on the game's own overlay
+`Loading DLC - Ante Chamber 60%` at t=215 s, while the baseline reaches the main
+menu in the same time (`nonblack` 4923/921600 vs 863912/921600). `LoadSprites`
+is not an optional preload - skipping it stalls the DLC load pipeline, so the
+low swap figure was measured on a stuck loading screen. Always verify the
+framebuffer, not just the counters.
+
+**Dropping CPU-side texture copies via `Texture2D.Apply(false, true)`.** Blocked
+by capability, not by idea: it needs the live `Texture2D` instances, and
+`libil2cpp.so` exports only `il2cpp_gc_get_used_size` and friends - no
+`GC_foreach`/`GC_enumerate_reachable_objects` - so the shim cannot walk the
+managed heap to find them.
+
+Where the memory actually is, same gameplay point: `RssAnon` 527 MB against
+Boehm `used=278 MB` and the shim's `tex=242 MB`. Cutting texture bytes by 60%
+moved neither `RssAnon` nor `tex=`, so textures are not what drives the swap -
+the managed heap is. The one lever that measurably moves it stays "select fewer
+DLC" (150 MB swap with none selected vs 341-446 MB with seven).
