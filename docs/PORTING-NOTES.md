@@ -224,3 +224,45 @@ Boehm `used=278 MB` and the shim's `tex=242 MB`. Cutting texture bytes by 60%
 moved neither `RssAnon` nor `tex=`, so textures are not what drives the swap -
 the managed heap is. The one lever that measurably moves it stays "select fewer
 DLC" (150 MB swap with none selected vs 341-446 MB with seven).
+
+## 13. Managed heap dig: the enumeration API exists, the lever does not
+
+Follow-up to section 12, since the obvious next question was "who owns the
+278 MB of Boehm heap".
+
+**`il2cpp_gc_foreach_heap` IS exported.** `readelf -sW --dyn-syms` on the stock
+`libil2cpp.so` lists, besides `il2cpp_gc_get_used_size`:
+
+    il2cpp_gc_foreach_heap          il2cpp_object_get_class
+    il2cpp_object_get_size          il2cpp_class_instance_size
+    il2cpp_class_get_name           il2cpp_class_get_namespace
+    il2cpp_class_get_image          il2cpp_image_get_name
+
+so the "no way to walk the heap" conclusion in section 12 was too strong: the
+shim gained `SF_HEAP_AT=<frame>` (quality.c, `heap_census()`), which calls the
+enumerator, validates every candidate`s class pointer against the metadata
+class table built from all loaded images (open-addressed set, 8192 slots) and
+ranks classes by bytes.
+
+**What it produced so far.** The enumerator works - 66 588 objects on the first
+run, 124 033 and 125 810 on later ones - but the callback argument is not the
+object: the address stays constant across calls while its content changes, i.e.
+it is a slot holding the current object. Dereferencing the slot once yields
+addresses whose first word is 0, so the class pointer is still not decoded and
+the census currently reports `objs=0 miss=<all> classes=0`. Three raw samples are
+logged per run (`[sf/heap] miss obj=... raw=... api=...`). Attribution is
+unfinished, not disproven.
+
+**The actionable half of the idea is dead, though.** `Texture2D.Apply(false,
+true)` was the remedy proposed for CPU-side texture copies. Reading
+`m_IsReadable` from the shipped bundles: 143 of 145 textures are already
+non-readable (2 readable). There are almost no CPU copies to free, so the whole
+"release the readback buffer" direction cannot recover hundreds of megabytes in
+this build regardless of how the enumeration is wired.
+
+**Where that leaves the goal.** Managed heap = game logic, DLC content objects
+and strings. Nothing inside it is a freeable engine buffer that a loader-side
+hook can drop without breaking gameplay, and 60% fewer texture bytes changed
+neither `RssAnon` nor `tex=`. The measured levers remain: select fewer DLC
+(150 MB swap with none vs 341-446 MB with seven) and the ASTC repack (~80 MB
+swap). Attribution work is kept in the shim as a diagnostic only.
