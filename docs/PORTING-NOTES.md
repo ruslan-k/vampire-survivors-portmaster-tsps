@@ -266,3 +266,48 @@ hook can drop without breaking gameplay, and 60% fewer texture bytes changed
 neither `RssAnon` nor `tex=`. The measured levers remain: select fewer DLC
 (150 MB swap with none vs 341-446 MB with seven) and the ASTC repack (~80 MB
 swap). Attribution work is kept in the shim as a diagnostic only.
+
+## 14. GL upload audit: what actually reaches the GPU
+
+The section 13 census left one open question from the review - does the ASTC
+repack shrink real uploads, or does the runtime re-expand the data? The shim now
+carries `SF_TEXSTAT_AT=<frame>` (`sf_texstat_dump()` in egl.c), an upload-byte
+histogram keyed by the internal format passed to the GL entry points. The `tex=`
+counter was format-blind, which is why the earlier numbers could not settle this.
+
+Measured at the same gameplay point (727 uploads), after correcting the byte
+accounting for single-channel formats:
+
+    fmt=0x1908 GL_RGBA    69.5 MB / 424
+    fmt=0x9278 ETC2_RGBA8 28.7 MB /  93
+    fmt=0x1903 GL_RED     23.4 MB / 142     (1 byte/texel)
+    fmt=0x1907 GL_RGB     16.8 MB /  12
+    fmt=0x93b0 ASTC_4x4   16.0 MB /   4
+    fmt=0x9274 ETC2_RGB8   2.0 MB /  51
+    fmt=0x9270 R11_EAC     0.0 MB /   1
+                            -------
+                           156.4 MB total  (tex=156MB/727 on the device)
+
+Two facts follow.
+
+**ASTC 6x6 never appears.** Not one of the 475 repacked textures is uploaded as
+`0x93b6` at this point; the only ASTC uploads are four pre-existing 4x4 ones.
+The 60% disk reduction of the repack therefore does not reach texture memory
+here - either those bundles are DLC content that this save point never loads, or
+the engine re-uploads their pixels in another format. Since DLC is 67% of the
+asset bytes, the first explanation is the likely one, but it means the repack's
+GPU-side benefit is unproven at every point measured so far, and its real,
+verified effect remains the roughly 80 MB of swap on the load path.
+
+**The old total was inflated 1.4x by a counting bug.** `tex=` charged every
+format it did not recognise at 4 bytes per texel, and the masks arrive through
+`TexSubImage2D`, where `GL_RED` was one of those: 93.7 MB when printed, 23.4 MB
+when counted at 1 byte. Fixing `texel_bytes()` alone changed nothing, because
+the sub-image path carried its own inline copy of the same arithmetic; both now
+handle `GL_RED`/`GL_RG`/`GL_ALPHA`/`GL_LUMINANCE`, and the corrected run reports
+`tex=156MB/727` with `GL_RGBA` (69.5 MB) as the largest group.
+
+So texture residency is 156 MB against ~278 MB of Boehm heap and 514-530 MB of
+`RssAnon`. Nothing here suggests a lever that a loader-side hook can pull: the
+biggest single group is game-owned mask data, and the compressed groups are
+already compressed.
