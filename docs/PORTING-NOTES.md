@@ -290,14 +290,16 @@ accounting for single-channel formats:
 
 Two facts follow.
 
-**ASTC 6x6 never appears.** Not one of the 475 repacked textures is uploaded as
-`0x93b6` at this point; the only ASTC uploads are four pre-existing 4x4 ones.
-The 60% disk reduction of the repack therefore does not reach texture memory
-here - either those bundles are DLC content that this save point never loads, or
-the engine re-uploads their pixels in another format. Since DLC is 67% of the
-asset bytes, the first explanation is the likely one, but it means the repack's
-GPU-side benefit is unproven at every point measured so far, and its real,
-verified effect remains the roughly 80 MB of swap on the load path.
+**ASTC 6x6 never appears.** The histogram is complete (all 7 formats that occur
+are printed), and the ASTC entries are `0x93b0` four times - pre-existing 4x4 -
+with no `0x93b4` (RGBA 6x6, what `TextureFormat=56` compiles to) and no `0x93d4`
+(sRGB 6x6). Constants checked against Khronos `GLES2/gl2ext.h`: 6x6 is `0x93b4`,
+while `0x93b6` is 8x6. So none of the 475 repacked textures reaches the GPU as
+ASTC at this point. Either those bundles are DLC content this save point never
+loads, or the engine re-uploads their pixels in another format. Since DLC is 67%
+of the asset bytes the first explanation is the likely one, but it means the
+repack's GPU-side benefit is unproven at every point measured so far, and its
+real, verified effect remains the roughly 80 MB of swap on the load path.
 
 **The old total was inflated 1.4x by a counting bug.** `tex=` charged every
 format it did not recognise at 4 bytes per texel, and the masks arrive through
@@ -307,7 +309,11 @@ the sub-image path carried its own inline copy of the same arithmetic; both now
 handle `GL_RED`/`GL_RG`/`GL_ALPHA`/`GL_LUMINANCE`, and the corrected run reports
 `tex=156MB/727` with `GL_RGBA` (69.5 MB) as the largest group.
 
-So texture residency is 156 MB against ~278 MB of Boehm heap and 514-530 MB of
-`RssAnon`. Nothing here suggests a lever that a loader-side hook can pull: the
-biggest single group is game-owned mask data, and the compressed groups are
-already compressed.
+Those 156 MB are *upload* bytes, not residency: uploads can be repeated, and GPU
+allocations need not land in process anonymous RSS, so the number cannot simply
+be added to the heap totals. The resident side is ~278 MB of Boehm heap plus
+engine and allocator overhead against 514-530 MB of `RssAnon`; adding the swapped
+pages back gives a 917-969 MB anonymous footprint, which no sum of these two
+counters explains on its own. Nothing here suggests a lever that a loader-side
+hook can pull: the biggest single group is game-owned mask data, and the
+compressed groups are already compressed.
