@@ -140,8 +140,10 @@ is how the numbers in this document were taken.
 
 ## 10. Debugging recipes
 
-- Screenshot on the device: `kmsgrab /tmp/s.png` (works with the game running);
-  `SF_SCREENSHOT` does not produce a file on this firmware.
+- Screenshot on the device: `SF_SCREENSHOT=/mnt/SDCARD/s.ppm SF_SCREENSHOT_LIVE=1`
+  env for the launcher, then `touch /tmp/bcshot` to grab the next frame
+  (`/mnt/SDCARD/s.ppm.001`, 1280x720 PPM); without `SF_SCREENSHOT_LIVE` the
+  capture fires once at `SF_SCREENSHOT_FRAME` (default 300).
 - Frame proof without looking at the panel: `SF_GPVIRT=1 SF_GPVDUR=…` counts
   non-black frames and prints a verdict (`best_non_black=98.8%`).
 - Loader log: everything goes to `<port>/log.txt`; `exec > >(tee …)` in the
@@ -149,3 +151,40 @@ is how the numbers in this document were taken.
   launcher, not `setsid`.
 - IL2CPP: dump with `Il2CppDumper` in `mcr.microsoft.com/dotnet/runtime:7.0`
   (the 8.0 image lacks the 7.0 framework the tool needs).
+
+## 11. Asset recompression to ASTC 6x6
+
+Textures dominate the GPU-side footprint. `tools/repack-astc.py` re-encodes
+RGBA32 / RGB24 / ETC2_RGBA8Crunched / ASTC_4x4 textures to **ASTC RGBA 6x6 at
+unchanged dimensions** (Unity `TextureFormat=56`), so sprite rects, atlases and
+UI layouts stay valid — unlike a downscale. Mip chains are re-encoded level by
+level with `astcenc -cl <in> <out> 6x6 -fast`.
+
+Measured on the 448 bundles that carry such textures:
+
+| | before | after |
+|---|---|---|
+| texture data (uncompressed equivalent, 653 textures) | 421 MB | 166 MB (−60%) |
+| files on disk | 356 MB | 468 MB |
+
+The disk growth is real: new blocks are inlined while the old `.resS` payload
+stays in the bundle as dead weight (bundle rewriting is not done). RAM/GPU win
+is the point; SD cost is ~110 MB.
+
+Two gotchas, both already fixed in the script:
+
+- UnityPy hands back `o.image` already flipped on Y. Encoding it as-is mirrors
+  every atlas (mean abs diff vs source 72.1); flipping back gives 4.88, which is
+  normal ASTC 6x6 loss.
+- The stream header has to be neutralised (`m_StreamData = {path:"",offset:0,
+  size:0}`) or the engine keeps reading the old `.resS` slice. Writing
+  `m_StreamData = {}` crashes UnityPy with `KeyError: 'offset'`.
+
+Verification used here: object count per bundle equal to the source, and
+`m_CompleteImageSize == sum(ceil(w/6)*ceil(h/6)*16)` per mip level — 448/448
+bundles clean. On device the game runs 30.0 fps with the recompressed assets and
+captured frames show no compression artifacts.
+
+The port's `tex=` counter is *format-blind* (pixels x 4 bytes), and neither
+`/sys/kernel/debug/mali0/gpu_memory` nor `dma_buf/bufinfo` reflects texture
+residency on this firmware, so the GPU-side saving is proven at file level only.
